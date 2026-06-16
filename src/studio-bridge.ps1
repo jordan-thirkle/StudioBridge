@@ -2,6 +2,8 @@ param(
 	[string]$ProjectDir = ""
 )
 
+$ErrorActionPreference = "Continue"
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -292,7 +294,7 @@ function Show-ProjectPicker {
 }
 
 
-function Run-HealthCheck {
+function Run-ProjectHealthCheck {
 	param([string]$TargetDir, [switch]$Quick)
 
 	if (-not (Test-Path -LiteralPath $TargetDir)) {
@@ -311,16 +313,19 @@ function Run-HealthCheck {
 	$healthResultsBox.AppendText("=== Studio Bridge Health Check ===`r`n")
 	$healthResultsBox.AppendText("Target: $TargetDir`r`n`r`n")
 
-	$results = [Run-HealthCheck]::Invoke($TargetDir)
+	$healthCmd = Get-Command -Module HealthEngine -Name Run-HealthCheck -ErrorAction SilentlyContinue
+	if (-not $healthCmd) {
+		$healthResultsBox.AppendText("[FAIL] Could not find Run-HealthCheck in HealthEngine module`r`n")
+		return
+	}
+
+	$results = & $healthCmd -TargetDir $TargetDir
 	if (-not $results -or $results.Count -eq 0) {
 		$healthResultsBox.AppendText("No results returned.`r`n")
 		return
 	}
 
-	$passCount = 0
-	$warnCount = 0
-	$failCount = 0
-	$infoCount = 0
+	$passCount = 0; $warnCount = 0; $failCount = 0; $infoCount = 0
 
 	foreach ($r in $results) {
 		$status = $r.Status
@@ -338,6 +343,13 @@ function Run-HealthCheck {
 		}
 	}
 
+	# Update summary panel
+	$healthPassLabel.Text = "[OK] $passCount"
+	$healthWarnLabel.Text = "  [WARN] $warnCount"
+	$healthFailLabel.Text = "  [FAIL] $failCount"
+	$healthInfoLabel.Text = "  [INFO] $infoCount"
+	$healthSummaryPanel.Visible = $true
+
 	$healthResultsBox.AppendText("`r`n")
 	$healthResultsBox.AppendText("=== Summary: $passCount passed, $warnCount warnings, $failCount failures ===`r`n")
 	if ($failCount -eq 0 -and $warnCount -eq 0) {
@@ -354,8 +366,9 @@ $form = New-Object System.Windows.Forms.Form
 $script:projectName = Get-ProjectName -Dir $projectRoot
 $form.Text = "Studio Bridge - $script:projectName"
 $form.ClientSize = New-Object System.Drawing.Size(750, 600)
+$form.MinimumSize = New-Object System.Drawing.Size(750, 500)
 $form.StartPosition = "CenterScreen"
-$form.FormBorderStyle = "FixedSingle"
+$form.FormBorderStyle = "Sizable"
 $form.MaximizeBox = $false
 
 # --- TabControl ---
@@ -816,12 +829,48 @@ $healthDetectBtn.Size = New-Object System.Drawing.Size(130, 34)
 $healthDetectBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $tabHealth.Controls.Add($healthDetectBtn)
 
+# Summary status panel
+$healthSummaryPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+$healthSummaryPanel.Location = New-Object System.Drawing.Point(14, 92)
+$healthSummaryPanel.Size = New-Object System.Drawing.Size(720, 28)
+$healthSummaryPanel.FlowDirection = "LeftToRight"
+$healthSummaryPanel.Visible = $false
+$tabHealth.Controls.Add($healthSummaryPanel)
+
+$healthPassLabel = New-Object System.Windows.Forms.Label
+$healthPassLabel.Text = "[OK] 0"
+$healthPassLabel.ForeColor = [System.Drawing.Color]::LimeGreen
+$healthPassLabel.Font = New-Object System.Drawing.Font("Consolas", 10, [System.Drawing.FontStyle]::Bold)
+$healthPassLabel.AutoSize = $true
+$healthSummaryPanel.Controls.Add($healthPassLabel)
+
+$healthWarnLabel = New-Object System.Windows.Forms.Label
+$healthWarnLabel.Text = "  [WARN] 0"
+$healthWarnLabel.ForeColor = [System.Drawing.Color]::Orange
+$healthWarnLabel.Font = New-Object System.Drawing.Font("Consolas", 10, [System.Drawing.FontStyle]::Bold)
+$healthWarnLabel.AutoSize = $true
+$healthSummaryPanel.Controls.Add($healthWarnLabel)
+
+$healthFailLabel = New-Object System.Windows.Forms.Label
+$healthFailLabel.Text = "  [FAIL] 0"
+$healthFailLabel.ForeColor = [System.Drawing.Color]::Red
+$healthFailLabel.Font = New-Object System.Drawing.Font("Consolas", 10, [System.Drawing.FontStyle]::Bold)
+$healthFailLabel.AutoSize = $true
+$healthSummaryPanel.Controls.Add($healthFailLabel)
+
+$healthInfoLabel = New-Object System.Windows.Forms.Label
+$healthInfoLabel.Text = "  [INFO] 0"
+$healthInfoLabel.ForeColor = [System.Drawing.Color]::DeepSkyBlue
+$healthInfoLabel.Font = New-Object System.Drawing.Font("Consolas", 10, [System.Drawing.FontStyle]::Bold)
+$healthInfoLabel.AutoSize = $true
+$healthSummaryPanel.Controls.Add($healthInfoLabel)
+
 $healthResultsBox = New-Object System.Windows.Forms.TextBox
 $healthResultsBox.Multiline = $true
 $healthResultsBox.ReadOnly = $true
 $healthResultsBox.ScrollBars = "Vertical"
-$healthResultsBox.Location = New-Object System.Drawing.Point(14, 96)
-$healthResultsBox.Size = New-Object System.Drawing.Size(720, 270)
+$healthResultsBox.Location = New-Object System.Drawing.Point(14, 126)
+$healthResultsBox.Size = New-Object System.Drawing.Size(720, 240)
 $healthResultsBox.Font = New-Object System.Drawing.Font("Consolas", 9)
 $healthResultsBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
 $healthResultsBox.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
@@ -836,19 +885,21 @@ $healthBrowseBtn.Add_Click({
 	if ($healthOpenDialog.ShowDialog() -eq "OK") {
 		$healthPathBox.Text = $healthOpenDialog.SelectedPath
 		$healthResultsBox.Clear()
+		$healthSummaryPanel.Visible = $false
 	}
 })
 
 $healthResetBtn.Add_Click({
 	$healthPathBox.Text = $projectRoot
 	$healthResultsBox.Clear()
+	$healthSummaryPanel.Visible = $false
 })
 
 $healthFullBtn.Add_Click({
 	$healthFullBtn.Enabled = $false
 	$healthFullBtn.Text = "Running..."
 	try {
-		Run-HealthCheck -TargetDir $healthPathBox.Text
+		Run-ProjectHealthCheck -TargetDir $healthPathBox.Text
 	} catch {
 		$healthResultsBox.AppendText("[ERROR] Health check failed: $_`r`n")
 	}
@@ -860,7 +911,7 @@ $healthQuickBtn.Add_Click({
 	$healthQuickBtn.Enabled = $false
 	$healthQuickBtn.Text = "Running..."
 	try {
-		Run-HealthCheck -TargetDir $healthPathBox.Text -Quick
+		Run-ProjectHealthCheck -TargetDir $healthPathBox.Text -Quick
 	} catch {
 		$healthResultsBox.AppendText("[ERROR] Quick verify failed: $_`r`n")
 	}
@@ -938,6 +989,34 @@ $statusStrip.Items.Add($statusProjectLabel)
 $statusStrip.Items.Add($statusBarLabel)
 $form.Controls.Add($statusStrip)
 
+# --- Tooltips ---
+$tooltip = New-Object System.Windows.Forms.ToolTip
+$tooltip.InitialDelay = 500
+$tooltip.ReshowDelay = 200
+$tooltip.AutoPopDelay = 8000
+
+$tooltip.SetToolTip($startBtn, "Starts Rojo serve so your scripts sync with Roblox Studio")
+$tooltip.SetToolTip($stopBtn, "Stops the Rojo sync server")
+$tooltip.SetToolTip($restartBtn, "Restarts the Rojo sync server (useful if something gets stuck)")
+$tooltip.SetToolTip($clearBtn, "Clears the log at the bottom of the window")
+$tooltip.SetToolTip($buildBtn, "Builds your project into a .rbxl file that Roblox Studio can open")
+$tooltip.SetToolTip($srcmapBtn, "Creates sourcemap.json for VS Code auto-complete (run once after changing scripts)")
+$tooltip.SetToolTip($luneRunBtn, "Runs the selected Lua/Luau script outside of Roblox (for testing)")
+$tooltip.SetToolTip($wallyInstallBtn, "Downloads and installs packages listed in wally.toml")
+$tooltip.SetToolTip($wallyUpdateBtn, "Updates the sourcemap.json for VS Code auto-complete")
+$tooltip.SetToolTip($gitStatusBtn, "Shows which files have been changed, added, or deleted")
+$tooltip.SetToolTip($gitAddBtn, "Stages ALL changes for commit (equivalent to 'git add -A')")
+$tooltip.SetToolTip($gitCommitBtn, "Saves staged changes with a message (commits to Git history)")
+$tooltip.SetToolTip($gitPushBtn, "Uploads commits to GitHub (only works after a commit)")
+$tooltip.SetToolTip($gitPullBtn, "Downloads latest changes from GitHub")
+$tooltip.SetToolTip($gitLogBtn, "Shows the 10 most recent commits")
+$tooltip.SetToolTip($gitDiffBtn, "Shows what changes are currently staged for commit")
+$tooltip.SetToolTip($healthBrowseBtn, "Pick your Roblox project folder")
+$tooltip.SetToolTip($healthResetBtn, "Reset to the current project folder")
+$tooltip.SetToolTip($healthFullBtn, "Runs all 16 checks: project files, tools, Git, sourcemap, packages")
+$tooltip.SetToolTip($healthQuickBtn, "Runs a lighter check (project files + tool versions only)")
+$tooltip.SetToolTip($healthDetectBtn, "Scans nearby folders for Roblox projects")
+
 # =============================================================================
 # TIMER
 # =============================================================================
@@ -973,19 +1052,22 @@ $form.Add_Shown({
 	$hasProject = (Test-Path -LiteralPath $projFilePath)
 
 	if (-not $hasProject) {
+		$healthSummaryPanel.Visible = $false
 		$healthResultsBox.Clear()
 		$healthResultsBox.AppendText("=== Welcome to Studio Bridge ===`r`n`r`n")
-		$healthResultsBox.AppendText("This tool helps you manage your Rojo-based Roblox projects.`r`n`r`n")
-		$healthResultsBox.AppendText("To get started, choose an option below:`r`n`r`n")
+		$healthResultsBox.AppendText("This tool helps you build Roblox games. It checks that your`r`n")
+		$healthResultsBox.AppendText("project is set up correctly and lets you manage your tools.`r`n`r`n")
+		$healthResultsBox.AppendText("GETTING STARTED:`r`n")
 		$healthResultsBox.AppendText("  1. Click 'Browse' to select your project folder`r`n")
-		$healthResultsBox.AppendText("  2. Click 'Detect Projects' to auto-scan for projects`r`n")
-		$healthResultsBox.AppendText("  3. Pass -ProjectDir `"path\to\project`" when launching`r`n")
-		$healthResultsBox.AppendText("  4. Launch from within a project directory`r`n")
-		Write-LogTimestamped "Welcome: no project detected. Browse, Detect, or pass -ProjectDir."
+		$healthResultsBox.AppendText("  2. Click 'Detect Projects' to find Roblox projects automatically`r`n")
+		$healthResultsBox.AppendText("`r`n")
+		$healthResultsBox.AppendText("Then click 'Run Full Health Check' to see if everything works!`r`n")
+		Write-LogTimestamped "Welcome: no project detected. Browse or detect first."
 	} else {
+		$healthSummaryPanel.Visible = $false
+		$healthResultsBox.Clear()
 		$healthResultsBox.AppendText("Project detected: $script:projectName`r`n")
 		$healthResultsBox.AppendText("Click 'Run Full Health Check' to verify everything works.`r`n")
-		$healthResultsBox.AppendText("Or click 'Quick Verify' for a lighter check.`r`n")
 	}
 })
 

@@ -17,26 +17,45 @@ function Get-ToolVersion {
 	if (-not $cmd) {
 		return New-Object PSObject -Property @{ Status = "FAIL"; Check = $ToolName; Detail = "$ToolName NOT FOUND in PATH"; Valid = $false; Group = "Tools" }
 	}
+
+	$raw = $null
+	$timeoutSec = 10
 	try {
-		if ($WorkingDir -and (Test-Path -LiteralPath $WorkingDir)) {
-			Push-Location -Path $WorkingDir
+		$exePath = (Get-Command $ToolName).Source
+		$psi = New-Object System.Diagnostics.ProcessStartInfo
+		$psi.FileName = $exePath
+		$psi.Arguments = $Arg
+		$psi.WorkingDirectory = if ($WorkingDir) { $WorkingDir } else { (Get-Location).Path }
+		$psi.UseShellExecute = $false
+		$psi.RedirectStandardOutput = $true
+		$psi.RedirectStandardError = $true
+		$psi.CreateNoWindow = $true
+		$proc = [System.Diagnostics.Process]::Start($psi)
+		if ($proc.WaitForExit($timeoutSec * 1000)) {
+			$raw = $proc.StandardOutput.ReadToEnd() + $proc.StandardError.ReadToEnd()
+		} else {
+			$proc.Kill()
+			return New-Object PSObject -Property @{ Status = "WARN"; Check = $ToolName; Detail = "$ToolName timed out after ${timeoutSec}s"; Valid = $true; Group = "Tools" }
 		}
-		$raw = & $ToolName $Arg 2>&1
-		if ($WorkingDir) { Pop-Location }
-		$clean = Remove-AnsiEscape ($raw | Out-String)
-		$lines = $clean.Trim() -split "`n"
-		$firstLine = $lines[0].Trim()
-		$version = ($firstLine -replace '^.*\berror\b.*$', '') -replace '^\D+(\d[\d.]*)', '$1'
-		if (-not $version -or $version -match "ERROR|error|not found|failed") {
-			$version = $firstLine
-			if ($version.Length -gt 60) { $version = $version.Substring(0, 60) + "..." }
-			return New-Object PSObject -Property @{ Status = "WARN"; Check = $ToolName; Detail = "$ToolName : $version"; Valid = $true; Group = "Tools" }
-		}
-		if ($version.Length -gt 50) { $version = $version.Substring(0, 50) + "..." }
-		return New-Object PSObject -Property @{ Status = "OK"; Check = $ToolName; Detail = "$ToolName $version"; Valid = $true; Group = "Tools" }
 	} catch {
 		return New-Object PSObject -Property @{ Status = "WARN"; Check = $ToolName; Detail = "$ToolName found but failed to run"; Valid = $true; Group = "Tools" }
 	}
+
+	if ($null -eq $raw) {
+		return New-Object PSObject -Property @{ Status = "WARN"; Check = $ToolName; Detail = "$ToolName produced no output"; Valid = $true; Group = "Tools" }
+	}
+
+	$clean = Remove-AnsiEscape ($raw | Out-String)
+	$lines = $clean.Trim() -split "`n"
+	$firstLine = $lines[0].Trim()
+	$version = ($firstLine -replace '^.*\berror\b.*$', '') -replace '^\D+(\d[\d.]*)', '$1'
+	if (-not $version -or $version -match "ERROR|error|not found|failed") {
+		$version = $firstLine
+		if ($version.Length -gt 60) { $version = $version.Substring(0, 60) + "..." }
+		return New-Object PSObject -Property @{ Status = "WARN"; Check = $ToolName; Detail = "$ToolName : $version"; Valid = $true; Group = "Tools" }
+	}
+	if ($version.Length -gt 50) { $version = $version.Substring(0, 50) + "..." }
+	return New-Object PSObject -Property @{ Status = "OK"; Check = $ToolName; Detail = "$ToolName $version"; Valid = $true; Group = "Tools" }
 }
 
 function Run-HealthCheck {
