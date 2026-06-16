@@ -319,7 +319,10 @@ function Run-ProjectHealthCheck {
 		return
 	}
 
-	$results = & $healthCmd -TargetDir $TargetDir
+	$results = & $healthCmd -TargetDir $TargetDir -Quick:$Quick
+	if ($Quick) {
+		$healthResultsBox.AppendText("(Quick mode: skipped tool version checks and Git)`r`n`r`n")
+	}
 	if (-not $results -or $results.Count -eq 0) {
 		$healthResultsBox.AppendText("No results returned.`r`n")
 		return
@@ -877,6 +880,35 @@ $healthResultsBox.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
 $healthResultsBox.WordWrap = $false
 $tabHealth.Controls.Add($healthResultsBox)
 
+# Project selection list (visible after Detect Projects finds something)
+$healthProjectList = New-Object System.Windows.Forms.ListBox
+$healthProjectList.Location = New-Object System.Drawing.Point(14, 370)
+$healthProjectList.Size = New-Object System.Drawing.Size(720, 0)
+$healthProjectList.Font = New-Object System.Drawing.Font("Consolas", 9)
+$healthProjectList.BackColor = [System.Drawing.Color]::FromArgb(40, 40, 50)
+$healthProjectList.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
+$healthProjectList.Visible = $false
+$healthProjectList.SelectionMode = "One"
+$tabHealth.Controls.Add($healthProjectList)
+
+$healthProjectList.Add_SelectedIndexChanged({
+	if ($healthProjectList.SelectedItem) {
+		$selected = $healthProjectList.SelectedItem
+		# Format: "Name  -  C:\Path\To\Project"
+		$dashIdx = $selected.LastIndexOf("  -  ")
+		if ($dashIdx -gt 0) {
+			$path = $selected.Substring($dashIdx + 5).Trim()
+			if (Test-Path -LiteralPath $path) {
+				$healthPathBox.Text = $path
+				$healthProjectList.Visible = $false
+				$healthResultsBox.Clear()
+				$healthSummaryPanel.Visible = $false
+				Run-ProjectHealthCheck -TargetDir $path
+			}
+		}
+	}
+})
+
 $healthOpenDialog = New-Object System.Windows.Forms.FolderBrowserDialog
 $healthOpenDialog.Description = "Select a Rojo project directory"
 
@@ -921,6 +953,8 @@ $healthQuickBtn.Add_Click({
 
 $healthDetectBtn.Add_Click({
 	$healthResultsBox.Clear()
+	$healthProjectList.Items.Clear()
+	$healthProjectList.Visible = $false
 	$healthResultsBox.AppendText("Scanning for Rojo projects...`r`n")
 	$parent = Split-Path -Path $healthPathBox.Text -Parent
 	$found = @()
@@ -939,15 +973,14 @@ $healthDetectBtn.Add_Click({
 		$healthResultsBox.AppendText("Try: 1) Browse for your project folder manually`r`n")
 		$healthResultsBox.AppendText("     2) Navigate to the parent directory containing your projects`r`n")
 	} else {
-		$healthResultsBox.AppendText("`r`nFound $($found.Count) project(s):`r`n")
-		$healthResultsBox.AppendText("`r`n")
-		$i = 0
+		$healthResultsBox.AppendText("`r`nFound $($found.Count) project(s). Click one to check it:`r`n")
+		$healthProjectList.Items.Clear()
 		foreach ($proj in $found) {
-			$i++
-			$healthResultsBox.AppendText("  $i. $($proj.Name)`r`n")
-			$healthResultsBox.AppendText("     $($proj.Path)`r`n")
+			[void]$healthProjectList.Items.Add("$($proj.Name)  -  $($proj.Path)")
 		}
-		$healthResultsBox.AppendText("`r`nTo select one, copy the path and paste it above, then click Run Health Check.`r`n")
+		$listHeight = [Math]::Min($found.Count * 16, 150)
+		$healthProjectList.Size = New-Object System.Drawing.Size(720, $listHeight)
+		$healthProjectList.Visible = $true
 	}
 })
 
@@ -1063,6 +1096,28 @@ $form.Add_Shown({
 		$healthResultsBox.AppendText("`r`n")
 		$healthResultsBox.AppendText("Then click 'Run Full Health Check' to see if everything works!`r`n")
 		Write-LogTimestamped "Welcome: no project detected. Browse or detect first."
+
+		# Auto-detect: scan sibling directories for projects
+		$parent = Split-Path -Path $projectRoot -Parent
+		if (Test-Path -LiteralPath $parent) {
+			$autoFound = @()
+			foreach ($dir in (Get-ChildItem -Path $parent -Directory -ErrorAction SilentlyContinue)) {
+				$projFile = Join-Path -Path $dir.FullName -ChildPath "default.project.json"
+				if (Test-Path -LiteralPath $projFile) { $autoFound += $dir }
+			}
+			if ($autoFound.Count -gt 0) {
+				$healthResultsBox.AppendText("`r`nAuto-detected projects:`r`n")
+				$healthProjectList.Items.Clear()
+				foreach ($dir in $autoFound) {
+					$name = "Unnamed"
+					try { $json = Get-Content (Join-Path $dir.FullName "default.project.json") -Raw | ConvertFrom-Json; $name = $json.name } catch {}
+					[void]$healthProjectList.Items.Add("$name  -  $($dir.FullName)")
+				}
+				$listHeight = [Math]::Min($autoFound.Count * 16, 150)
+				$healthProjectList.Size = New-Object System.Drawing.Size(720, $listHeight)
+				$healthProjectList.Visible = $true
+			}
+		}
 	} else {
 		$healthSummaryPanel.Visible = $false
 		$healthResultsBox.Clear()

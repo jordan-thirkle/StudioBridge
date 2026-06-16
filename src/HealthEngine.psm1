@@ -1,7 +1,5 @@
 # Studio Bridge — Portable Health Engine
-# Pure functions returning structured objects.
 # Import: Import-Module .\HealthEngine.psm1
-# CLI:   powershell -Command "Import-Module .\HealthEngine.psm1; Run-HealthCheck -TargetDir 'X' | ConvertTo-Json"
 
 function Remove-AnsiEscape {
 	param([string]$InputString)
@@ -98,8 +96,12 @@ function Run-HealthCheck {
 	}
 
 	# --- Tool versions ---
-	foreach ($name in @("Rojo", "StyLua", "Selene", "Lune", "Wally")) {
-		$results += Get-ToolVersion -ToolName $name -WorkingDir $TargetDir
+	if (-not $Quick) {
+		foreach ($name in @("Rojo", "StyLua", "Selene", "Lune", "Wally")) {
+			$results += Get-ToolVersion -ToolName $name -WorkingDir $TargetDir
+		}
+	} else {
+		$results += New-Object PSObject -Property @{ Status = "INFO"; Check = "Tools"; Detail = "Skipped in Quick Verify (run Full check for tool versions)"; Group = "Tools" }
 	}
 
 	# --- Rojo serve ---
@@ -110,30 +112,34 @@ function Run-HealthCheck {
 		$results += New-Object PSObject -Property @{ Status = "INFO"; Check = "Rojo serve"; Detail = "Rojo serve is STOPPED. Start from Rojo tab when needed."; Fix = "Go to Rojo tab -> Start"; Group = "Rojo" }
 	}
 
-	# --- Git ---
-	$gitDir = Join-Path -Path $TargetDir -ChildPath ".git"
-	if (Test-Path -LiteralPath $gitDir -PathType Container) {
-		try {
-			$status = & git -C $TargetDir status --short 2>&1
-			$fileCount = ($status | Where-Object { $_ }).Count
-			if ($fileCount -gt 0) {
-				$results += New-Object PSObject -Property @{ Status = "WARN"; Check = "Git status"; Detail = "$fileCount uncommitted file(s)"; Fix = "Go to Git tab -> Commit"; Group = "Git" }
-			} else {
-				$results += New-Object PSObject -Property @{ Status = "OK"; Check = "Git status"; Detail = "Working tree clean"; Group = "Git" }
+	# --- Git (skipped in Quick) ---
+	if (-not $Quick) {
+		$gitDir = Join-Path -Path $TargetDir -ChildPath ".git"
+		if (Test-Path -LiteralPath $gitDir -PathType Container) {
+			try {
+				$status = & git -C $TargetDir status --short 2>&1
+				$fileCount = ($status | Where-Object { $_ }).Count
+				if ($fileCount -gt 0) {
+					$results += New-Object PSObject -Property @{ Status = "WARN"; Check = "Git status"; Detail = "$fileCount uncommitted file(s)"; Fix = "Go to Git tab -> Commit"; Group = "Git" }
+				} else {
+					$results += New-Object PSObject -Property @{ Status = "OK"; Check = "Git status"; Detail = "Working tree clean"; Group = "Git" }
+				}
+			} catch {
+				$results += New-Object PSObject -Property @{ Status = "WARN"; Check = "Git status"; Detail = "Could not check Git status"; Group = "Git" }
 			}
-		} catch {
-			$results += New-Object PSObject -Property @{ Status = "WARN"; Check = "Git status"; Detail = "Could not check Git status"; Group = "Git" }
-		}
-		try {
-			$lc = & git -C $TargetDir log --oneline -1 2>&1
-			if ($lc) {
-				$results += New-Object PSObject -Property @{ Status = "OK"; Check = "Git log"; Detail = ($lc | Out-String).Trim(); Group = "Git" }
+			try {
+				$lc = & git -C $TargetDir log --oneline -1 2>&1
+				if ($lc) {
+					$results += New-Object PSObject -Property @{ Status = "OK"; Check = "Git log"; Detail = ($lc | Out-String).Trim(); Group = "Git" }
+				}
+			} catch {
+				$results += New-Object PSObject -Property @{ Status = "INFO"; Check = "Git log"; Detail = "No commits yet"; Group = "Git" }
 			}
-		} catch {
-			$results += New-Object PSObject -Property @{ Status = "INFO"; Check = "Git log"; Detail = "No commits yet"; Group = "Git" }
+		} else {
+			$results += New-Object PSObject -Property @{ Status = "FAIL"; Check = "Git"; Detail = "Not a git repository"; Fix = "Run: git init"; Group = "Git" }
 		}
 	} else {
-		$results += New-Object PSObject -Property @{ Status = "FAIL"; Check = "Git"; Detail = "Not a git repository"; Fix = "Run: git init"; Group = "Git" }
+		$results += New-Object PSObject -Property @{ Status = "INFO"; Check = "Git"; Detail = "Skipped in Quick Verify (run Full check for Git)"; Group = "Git" }
 	}
 
 	# --- Sourcemap ---
