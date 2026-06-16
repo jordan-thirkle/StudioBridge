@@ -5,6 +5,15 @@ param(
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# --- Load Health Engine ---
+$enginePath = Join-Path -Path $PSScriptRoot -ChildPath "HealthEngine.psm1"
+if (Test-Path -LiteralPath $enginePath) {
+	Import-Module -Name $enginePath -Force -DisableNameChecking -ErrorAction Stop
+	$script:engineLoaded = $true
+} else {
+	$script:engineLoaded = $false
+}
+
 # --- Project Discovery ---
 function Get-ProjectDirectory {
 	if ($ProjectDir -and (Test-Path -LiteralPath $ProjectDir)) {
@@ -282,202 +291,61 @@ function Show-ProjectPicker {
 	return $false
 }
 
-function Write-HealthResult {
-	param([string]$Text)
-	$healthResultsBox.AppendText("$Text`r`n")
-	$healthResultsBox.SelectionStart = $healthResultsBox.Text.Length
-	$healthResultsBox.ScrollToCaret()
-	Write-LogTimestamped $Text
-}
 
 function Run-HealthCheck {
 	param([string]$TargetDir, [switch]$Quick)
 
 	if (-not (Test-Path -LiteralPath $TargetDir)) {
-		Write-HealthResult "[FAIL] Directory does not exist: $TargetDir"
+		$healthResultsBox.Clear()
+		$healthResultsBox.AppendText("[FAIL] Directory does not exist: $TargetDir`r`n")
+		return
+	}
+
+	if (-not $script:engineLoaded) {
+		$healthResultsBox.Clear()
+		$healthResultsBox.AppendText("[FAIL] Health engine not loaded (HealthEngine.psm1 missing)`r`n")
 		return
 	}
 
 	$healthResultsBox.Clear()
-	Write-HealthResult "=== Studio Bridge Health Check ==="
-	Write-HealthResult "Target: $TargetDir"
-	Write-HealthResult ""
+	$healthResultsBox.AppendText("=== Studio Bridge Health Check ===`r`n")
+	$healthResultsBox.AppendText("Target: $TargetDir`r`n`r`n")
+
+	$results = [Run-HealthCheck]::Invoke($TargetDir)
+	if (-not $results -or $results.Count -eq 0) {
+		$healthResultsBox.AppendText("No results returned.`r`n")
+		return
+	}
 
 	$passCount = 0
 	$warnCount = 0
 	$failCount = 0
+	$infoCount = 0
 
-	# --- Project file checks ---
-	$projFile = Join-Path -Path $TargetDir -ChildPath "default.project.json"
-	if (Test-Path -LiteralPath $projFile) {
-		try {
-			$json = Get-Content -LiteralPath $projFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-			$pn = if ($json.name) { $json.name } else { "Unnamed" }
-			Write-HealthResult "[OK] default.project.json valid (`"$pn`")"
-			$passCount++
-		} catch {
-			Write-HealthResult "[FAIL] default.project.json: invalid JSON"
-			$failCount++
-		}
-
-		$rojofile = Join-Path -Path $TargetDir -ChildPath "rokit.toml"
-		if (Test-Path -LiteralPath $rojofile) {
-			Write-HealthResult "[OK] rokit.toml found (version-managed project)"
-			$passCount++
-		} else {
-			Write-HealthResult "[WARN] rokit.toml missing (tools not pinned)"
-			$warnCount++
-		}
-	} else {
-		Write-HealthResult "[FAIL] default.project.json NOT FOUND - not a Rojo project"
-		Write-HealthResult ""
-		Write-HealthResult "=== Summary: 0 passed, 0 warnings, 1 failure ==="
-		Write-HealthResult "Select a project folder with the Browse button above."
-		Write-HealthResult ""
-		if ([System.Windows.Forms.MessageBox]::Show(
-			"default.project.json not found. Browse for a Rojo project?",
-			"Project Not Found",
-			[System.Windows.Forms.MessageBoxButtons]::YesNo
-		) -eq "Yes") {
-			[void](Show-ProjectPicker)
-		}
-		return
-	}
-
-	# --- Luaurc ---
-	$luaurcFile = Join-Path -Path $TargetDir -ChildPath ".luaurc"
-	if (Test-Path -LiteralPath $luaurcFile) {
-		Write-HealthResult "[OK] .luaurc found (Luau language mode configured)"
-		$passCount++
-	} else {
-		Write-HealthResult "[WARN] .luaurc missing (Luau LSP may not work)"
-		$warnCount++
-	}
-
-	# --- Tool version checks ---
-	$tools = @(
-		@{ Name = "Rojo"; Cmd = "rojo"; Arg = "--version" },
-		@{ Name = "StyLua"; Cmd = "stylua"; Arg = "--version" },
-		@{ Name = "Selene"; Cmd = "selene"; Arg = "--version" },
-		@{ Name = "Lune"; Cmd = "lune"; Arg = "--version" },
-		@{ Name = "Wally"; Cmd = "wally"; Arg = "--version" }
-	)
-
-	foreach ($tool in $tools) {
-		$name = $tool.Name
-		$cmd = Get-Command $tool.Cmd -ErrorAction SilentlyContinue
-		if ($cmd) {
-			try {
-				$result = & $tool.Cmd $tool.Arg 2>&1
-				$version = ($result | Out-String).Trim().Split("`n")[0].Trim()
-				if ($version.Length -gt 40) { $version = $version.Substring(0, 40) + "..." }
-				Write-HealthResult "[OK] $name $version"
-				$passCount++
-			} catch {
-				Write-HealthResult "[WARN] $name found but failed to run"
-				$warnCount++
-			}
-		} else {
-			Write-HealthResult "[FAIL] $name NOT FOUND in PATH"
-			$failCount++
+	foreach ($r in $results) {
+		$status = $r.Status
+		$check = $r.Check
+		$detail = $r.Detail
+		$fix = if ($r.Fix) { " -- $($r.Fix)" } else { "" }
+		$line = "[$status] $check : $detail$fix`r`n"
+		$healthResultsBox.AppendText($line)
+		Write-LogTimestamped $line.Trim()
+		switch ($status) {
+			"OK"    { $passCount++ }
+			"WARN"  { $warnCount++ }
+			"FAIL"  { $failCount++ }
+			"INFO"  { $infoCount++ }
 		}
 	}
 
-	# --- Rojo serve check ---
-	try {
-		$rojoRunning = $false
-		if ($script:rojoProcess -and !$script:rojoProcess.HasExited) {
-			$rojoRunning = $true
-		} else {
-			$orphans = Get-Process -Name "rojo" -ErrorAction SilentlyContinue
-			if ($orphans) { $rojoRunning = $true }
-		}
-		if ($rojoRunning) {
-			Write-HealthResult "[OK] Rojo serve: RUNNING (port $($script:portNumber))"
-			$passCount++
-		} else {
-			Write-HealthResult "[INFO]  Rojo serve: STOPPED (start from Rojo tab)"
-		}
-	} catch {
-		Write-HealthResult "[WARN] Could not check Rojo serve status"
-		$warnCount++
-	}
-
-	# --- Git checks ---
-	$gitDir = Join-Path -Path $TargetDir -ChildPath ".git"
-	if (Test-Path -LiteralPath $gitDir -PathType Container) {
-		try {
-			$status = & git -C $TargetDir status --short 2>&1
-			$fileCount = ($status | Where-Object { $_ -ne $null }).Count
-			if ($fileCount -gt 0) {
-				Write-HealthResult "[WARN] Git: $fileCount uncommitted file(s)"
-				$warnCount++
-			} else {
-				Write-HealthResult "[OK] Git: working tree clean"
-				$passCount++
-			}
-		} catch {
-			Write-HealthResult "[WARN] Git repo found but status check failed"
-			$warnCount++
-		}
-		try {
-			$lastCommit = & git -C $TargetDir log --oneline -1 2>&1
-			if ($lastCommit) {
-				Write-HealthResult "[OK] Last commit: $($lastCommit.Trim())"
-				$passCount++
-			}
-		} catch {
-			Write-HealthResult "[INFO]  No commits yet"
-		}
-		try {
-			$branch = & git -C $TargetDir rev-parse --abbrev-ref HEAD 2>&1
-			if ($branch) { Write-HealthResult "[INFO]  Branch: $($branch.Trim())" }
-		} catch { }
-	} else {
-		Write-HealthResult "[FAIL] Not a git repository (.git missing)"
-		$failCount++
-	}
-
-	# --- Sourcemap ---
-	$srcmap = Join-Path -Path $TargetDir -ChildPath "sourcemap.json"
-	if (Test-Path -LiteralPath $srcmap) {
-		Write-HealthResult "[OK] sourcemap.json exists (LSP ready)"
-		$passCount++
-	} else {
-		Write-HealthResult "[WARN] sourcemap.json missing (run Rojo Tools -> Generate Sourcemap)"
-		$warnCount++
-	}
-
-	# --- Packages ---
-	$pkgDir = Join-Path -Path $TargetDir -ChildPath "Packages"
-	if (Test-Path -LiteralPath $pkgDir -PathType Container) {
-		Write-HealthResult "[OK] Packages/ installed"
-		$passCount++
-	} else {
-		Write-HealthResult "[INFO]  Packages/ not installed (run Wally -> Install if needed)"
-	}
-
-	# --- Source file count ---
-	$srcDir = Join-Path -Path $TargetDir -ChildPath "src"
-	if (Test-Path -LiteralPath $srcDir -PathType Container) {
-		$luauFiles = Get-ChildItem -Path $srcDir -Recurse -Include *.luau, *.lua -ErrorAction SilentlyContinue
-		$fileCount = ($luauFiles | Measure-Object).Count
-		Write-HealthResult "[OK] $fileCount source files in src/"
-		$passCount++
-	} else {
-		Write-HealthResult "[WARN] src/ directory not found"
-		$warnCount++
-	}
-
-	# --- Summary ---
-	Write-HealthResult ""
-	Write-HealthResult "=== Summary: $passCount passed, $warnCount warnings, $failCount failures ==="
+	$healthResultsBox.AppendText("`r`n")
+	$healthResultsBox.AppendText("=== Summary: $passCount passed, $warnCount warnings, $failCount failures ===`r`n")
 	if ($failCount -eq 0 -and $warnCount -eq 0) {
-		Write-HealthResult "[OK] Everything looks good!"
+		$healthResultsBox.AppendText("[OK] Everything looks good!`r`n")
 	} elseif ($failCount -eq 0) {
-		Write-HealthResult "[WARN] All critical checks pass, address warnings when convenient."
+		$healthResultsBox.AppendText("[WARN] All critical checks pass, address warnings when convenient.`r`n")
 	} else {
-		Write-HealthResult "[FAIL] $failCount critical issue(s) need attention."
+		$healthResultsBox.AppendText("[FAIL] $failCount critical issue(s) need attention.`r`n")
 	}
 }
 
@@ -941,6 +809,13 @@ $healthQuickBtn.Size = New-Object System.Drawing.Size(130, 34)
 $healthQuickBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $tabHealth.Controls.Add($healthQuickBtn)
 
+$healthDetectBtn = New-Object System.Windows.Forms.Button
+$healthDetectBtn.Text = "Detect Projects"
+$healthDetectBtn.Location = New-Object System.Drawing.Point(354, 50)
+$healthDetectBtn.Size = New-Object System.Drawing.Size(130, 34)
+$healthDetectBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$tabHealth.Controls.Add($healthDetectBtn)
+
 $healthResultsBox = New-Object System.Windows.Forms.TextBox
 $healthResultsBox.Multiline = $true
 $healthResultsBox.ReadOnly = $true
@@ -975,7 +850,7 @@ $healthFullBtn.Add_Click({
 	try {
 		Run-HealthCheck -TargetDir $healthPathBox.Text
 	} catch {
-		Write-HealthResult "[ERROR] Health check failed: $_"
+		$healthResultsBox.AppendText("[ERROR] Health check failed: $_`r`n")
 	}
 	$healthFullBtn.Text = ">  Run Full Health Check"
 	$healthFullBtn.Enabled = $true
@@ -987,10 +862,42 @@ $healthQuickBtn.Add_Click({
 	try {
 		Run-HealthCheck -TargetDir $healthPathBox.Text -Quick
 	} catch {
-		Write-HealthResult "[ERROR] Quick verify failed: $_"
+		$healthResultsBox.AppendText("[ERROR] Quick verify failed: $_`r`n")
 	}
 	$healthQuickBtn.Text = "Quick Verify"
 	$healthQuickBtn.Enabled = $true
+})
+
+$healthDetectBtn.Add_Click({
+	$healthResultsBox.Clear()
+	$healthResultsBox.AppendText("Scanning for Rojo projects...`r`n")
+	$parent = Split-Path -Path $healthPathBox.Text -Parent
+	$found = @()
+	foreach ($dir in (Get-ChildItem -Path $parent -Directory -ErrorAction SilentlyContinue)) {
+		$projFile = Join-Path -Path $dir.FullName -ChildPath "default.project.json"
+		if (Test-Path -LiteralPath $projFile) {
+			try {
+				$json = Get-Content -LiteralPath $projFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+				$name = if ($json.name) { $json.name } else { $dir.Name }
+				$found += @{ Name = $name; Path = $dir.FullName }
+			} catch { }
+		}
+	}
+	if ($found.Count -eq 0) {
+		$healthResultsBox.AppendText("`r`nNo Rojo projects found in parent directory.`r`n")
+		$healthResultsBox.AppendText("Try: 1) Browse for your project folder manually`r`n")
+		$healthResultsBox.AppendText("     2) Navigate to the parent directory containing your projects`r`n")
+	} else {
+		$healthResultsBox.AppendText("`r`nFound $($found.Count) project(s):`r`n")
+		$healthResultsBox.AppendText("`r`n")
+		$i = 0
+		foreach ($proj in $found) {
+			$i++
+			$healthResultsBox.AppendText("  $i. $($proj.Name)`r`n")
+			$healthResultsBox.AppendText("     $($proj.Path)`r`n")
+		}
+		$healthResultsBox.AppendText("`r`nTo select one, copy the path and paste it above, then click Run Health Check.`r`n")
+	}
 })
 
 $tabControl.TabPages.Add($tabHealth)
@@ -1055,21 +962,30 @@ $timer.Add_Tick({
 $form.Add_Shown({
 	$timer.Start()
 	Update-Status
+	$tabControl.SelectTab($tabHealth)
 	$script:projectName = Get-ProjectName -Dir $projectRoot
 	$form.Text = "Studio Bridge - $script:projectName"
 	Write-LogTimestamped "=== Studio Bridge v1.0 ==="
 	Write-LogTimestamped "Project: $projectRoot"
 	Write-LogTimestamped "Detected: $script:projectName"
 
-	# If no project was auto-detected, prompt user
-	if ($script:projectName -eq "StudioBridge" -or -not (Test-Path (Join-Path -Path $projectRoot -ChildPath "default.project.json"))) {
-		Write-LogTimestamped ""
-		Write-LogTimestamped "No Rojo project detected. You can:"
-		Write-LogTimestamped "  1. Click the Health tab and Browse for your project"
-		Write-LogTimestamped "  2. Pass -ProjectDir `"path\to\project`" when launching"
-		Write-LogTimestamped "  3. Launch from within a project directory"
+	$projFilePath = Join-Path -Path $projectRoot -ChildPath "default.project.json"
+	$hasProject = (Test-Path -LiteralPath $projFilePath)
+
+	if (-not $hasProject) {
+		$healthResultsBox.Clear()
+		$healthResultsBox.AppendText("=== Welcome to Studio Bridge ===`r`n`r`n")
+		$healthResultsBox.AppendText("This tool helps you manage your Rojo-based Roblox projects.`r`n`r`n")
+		$healthResultsBox.AppendText("To get started, choose an option below:`r`n`r`n")
+		$healthResultsBox.AppendText("  1. Click 'Browse' to select your project folder`r`n")
+		$healthResultsBox.AppendText("  2. Click 'Detect Projects' to auto-scan for projects`r`n")
+		$healthResultsBox.AppendText("  3. Pass -ProjectDir `"path\to\project`" when launching`r`n")
+		$healthResultsBox.AppendText("  4. Launch from within a project directory`r`n")
+		Write-LogTimestamped "Welcome: no project detected. Browse, Detect, or pass -ProjectDir."
 	} else {
-		Write-LogTimestamped "Ready. Go to Health tab to run checks."
+		$healthResultsBox.AppendText("Project detected: $script:projectName`r`n")
+		$healthResultsBox.AppendText("Click 'Run Full Health Check' to verify everything works.`r`n")
+		$healthResultsBox.AppendText("Or click 'Quick Verify' for a lighter check.`r`n")
 	}
 })
 
