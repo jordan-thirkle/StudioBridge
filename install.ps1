@@ -40,10 +40,11 @@ if (-not $hasRojo) {
 	Write-Host "[INFO] Rojo not found. Install via: rokit install"
 	Write-Host "      Download Rokit from: https://github.com/rojo-rbx/rokit"
 } else {
-	Write-Host "[OK] Rojo: $((rojo --version 2>&1).Trim())"
+	$ver = (rojo --version 2>&1) -join " "; Write-Host "[OK] Rojo: $ver"
 }
 
 # --- Copy files ---
+if ($InstallDir -ne (Split-Path -Parent $PSCommandPath)) {
 Write-Host ""
 Write-Host "Installing to: $InstallDir"
 
@@ -65,6 +66,8 @@ Copy-Item -Path "$scriptDir\template\rojo-control.bat" -Destination "$InstallDir
 Copy-Item -Path "$scriptDir\README.md" -Destination "$InstallDir\" -Force
 Copy-Item -Path "$scriptDir\LICENSE" -Destination "$InstallDir\" -Force
 Write-Host "[OK] Files copied"
+} else {
+	Write-Host "[OK] Already installed (source and destination are the same)"
 
 # --- Create desktop shortcut ---
 if (-not $NoShortcut) {
@@ -74,7 +77,7 @@ if (-not $NoShortcut) {
 	$shortcut.TargetPath = "powershell.exe"
 	$shortcut.Arguments = "-ExecutionPolicy Bypass -File `"$InstallDir\src\studio-bridge.ps1`""
 	$shortcut.WorkingDirectory = $InstallDir
-	$shortcut.Description = "Studio Bridge — Universal Rojo Dev Dashboard"
+	$shortcut.Description = "Studio Bridge - Universal Rojo Dev Dashboard"
 	$shortcut.Save()
 	Write-Host "[OK] Desktop shortcut created"
 }
@@ -97,10 +100,10 @@ Write-Host @"
 Studio Bridge installed at: $InstallDir
 
 QUICK START:
-  Double-click the "Studio Bridge" desktop icon
-  -> Click the Health tab
-  -> Click Browse, pick your Rojo project folder
-  -> Click "Run Full Health Check"
+  Double-click the Studio Bridge desktop icon
+  - Click the Health tab
+  - Click Browse, pick your Rojo project folder
+  - Click Run Full Health Check
 
 OR run from any project:
   powershell -ExecutionPolicy Bypass -File "$InstallDir\src\studio-bridge.ps1" -ProjectDir "C:\path\to\project"
